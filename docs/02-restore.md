@@ -105,7 +105,7 @@ is validated **before** anything is written: if the output would contain a dupli
 imported task would be left enabled, the script stops with nothing written. A half-written task
 file is worse than no task file.
 
-After the run, read `task-merge-report-*.txt`. It lists five things: what was added, what was
+After the run, read `task-merge-report-*.txt`. It lists six things: what was added, what was
 updated, what was kept (account-only), what was dropped (only in `replace` mode), what is still
 enabled, and which previously-running account tasks this import disabled. If the "still enabled"
 or "now DISABLED" lists are not what you expect, stop and deal with it before enabling anything.
@@ -123,6 +123,21 @@ It costs nothing to check with 20 files, and it deliberately picks the 20 most r
 **non-routine** sessions — routine-spawned sessions only appear after their task is imported,
 so including them would make a working test look broken.
 
+**Same-named sessions are the norm here.** On the machine this kit was written on, all 2847 of
+the account's sessions also existed in the gateway partition. Most were byte-identical; 33
+differed and the **gateway's copy was newer** (median 11 days), with real differences in
+`completedTurns`, `model`, `lastAssistantUuid`, `publishedArtifacts` and `lastActivityAt`.
+So `restore.sh` decides per file rather than skipping:
+
+| Situation | What happens |
+|---|---|
+| Byte-identical | left alone |
+| Differs, gateway newer | the gateway's copy **replaces** it; the account's older copy is parked in `replaced-sessions/<stamp>/` and listed in `manifest-replaced.txt` |
+| Differs, account newer | the account's copy is kept (nothing is overwritten with older data) |
+| Differs, one side unparseable | the account's copy is kept — the script does not guess |
+
+The last two are written to `conflicts-<stamp>.txt`. `rollback.sh` puts the replaced ones back.
+
 After `test`, reopen Claude, confirm the sessions appear and a transcript opens with full
 history. Only then run `all`.
 
@@ -136,14 +151,25 @@ Do this **before** enabling anything. See `docs/03-leaving-gateway.md`.
 
 ## Step 6 — re-enable, in batches
 
+There are **two** lists, and they answer different questions:
+
 ```bash
+# what was running on the gateway — the usual case
 bash scripts/restore-enabled.sh --dry-run
 bash scripts/restore-enabled.sh --limit 5     # watch one actually run
 bash scripts/restore-enabled.sh --limit 20
 bash scripts/restore-enabled.sh
+
+# what was running in the ACCOUNT before the import, if the merge switched any of it off
+bash scripts/restore-enabled.sh --from target-was-enabled-<stamp>.txt --dry-run
+bash scripts/restore-enabled.sh --from target-was-enabled-<stamp>.txt
+
+# or name ids directly, whether or not they are in either list
+bash scripts/restore-enabled.sh --only daily-backlink-building,alpha-content-publishing
 ```
 
-It restores the set saved in step 0/step 3 — **not** a set the script guessed. Staging matters:
+`--from` also takes any other list file. It restores the set saved in step 0/step 3 — **not** a
+set the script guessed, and never anything the user had switched off. Staging matters:
 a broken dependency (auth, browser bridge, model id, quota) shows up as dozens of failures at
 once if you enable everything together, and then you have no signal about which one broke.
 
@@ -156,9 +182,15 @@ by task name to put "safe-looking" tasks first.
 bash scripts/rollback.sh
 ```
 
-Deletes exactly the files `restore.sh` copied, from its manifests, and restores the task file
-from the pre-import backup. It never touches the source partition, and it will not delete a
-session you have since used. Because the restore is copy-only, rollback is always available.
+It does four things: puts back any session file the restore **replaced** (from
+`replaced-sessions/<stamp>/`), deletes exactly the files it **copied**, restores the task file
+from the pre-import backup — or deletes it if the account had none and the restore created it —
+and cleans up the Cowork files it copied.
+
+It never touches the source partition. It will not delete a session or a Cowork file that has
+changed since the restore, and it will not delete one whose source twin is missing, because it
+cannot prove the restore created it. Because the restore is copy-only, rollback is always
+available.
 
 ## Then
 

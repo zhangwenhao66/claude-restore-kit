@@ -7,6 +7,14 @@ manifest-sessions.txt
 manifest-cowork.txt
 source-tasks-*.json
 source-enabled-tasks-*.txt
+target-was-enabled-*.txt
+replaced-sessions/
+.tasks-created-by-restore
+.decisions-*
+.names-*
+.manifest-*.dedup
+conflicts-*.txt
+manifest-replaced.txt
 task-merge-report-*.txt
 .backup-done
 

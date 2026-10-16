@@ -34,6 +34,10 @@ report first: read the items, do not just look at the exit code.
 
 ## After `restore.sh all`
 
+- [ ] If the restore printed `replaced=`, the account's older copies are in
+      `replaced-sessions/<stamp>/` — confirm they are there before you trust `rollback.sh`.
+- [ ] If it printed `kept-target=`, read `conflicts-<stamp>.txt` and confirm that keeping the
+      account's copy was right for each one.
 - [ ] Source session count now matches the target count
       (`find <CODE_DST> -maxdepth 1 -name 'local_*.json' | wc -l`).
 - [ ] The source count is **unchanged** — proof that nothing was moved.
@@ -43,6 +47,11 @@ report first: read the items, do not just look at the exit code.
 - [ ] Anything listed under *"WAS running in the account, now DISABLED"* in
       `task-merge-report-*.txt` is a decision you have made on purpose, not something you
       discover later. `target-was-enabled-*.txt` is the full list of what the account had on.
+- [ ] If any of those should be running, they were put back deliberately:
+      `bash scripts/restore-enabled.sh --from target-was-enabled-<stamp>.txt --dry-run` first,
+      then without `--dry-run`. Do not assume the default invocation did it — it reads the
+      *gateway* list.
+- [ ] `bash scripts/check-gateway.sh` exits 0 before you enable anything.
 - [ ] Cowork chats are present (if `MIGRATE_COWORK=1`).
 - [ ] Archived sessions and routine-spawned sessions legitimately do **not** appear in the
       folder list. Confirm the user understands this before they conclude something is missing.

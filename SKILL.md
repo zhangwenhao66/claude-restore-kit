@@ -137,6 +137,11 @@ Ask the user to confirm, in the UI: sessions appear (note: **archived** and **ro
 sessions legitimately do not appear in the folder list — explain this before they panic),
 opening one shows the full history, the routine count matches, Cowork is back.
 
+Two lists were saved, and they answer different questions: `source-enabled-tasks-<stamp>.txt` is
+what was running on the gateway (the usual case), and `target-was-enabled-<stamp>.txt` is what was
+running in the account before the import, if the merge switched any of it off. Tell the user which
+one you are applying, and read `task-merge-report-*.txt` before either.
+
 Then re-enable **from the saved list**, in batches:
 
 ```bash

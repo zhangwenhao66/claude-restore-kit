@@ -35,6 +35,55 @@ bash scripts/check-gateway.sh
 Run it before enabling anything. On the machine this kit was written on, the gateway URL was
 still sitting in a config file weeks after the switch.
 
+### Same-named sessions are the normal case, not an edge case
+
+On the machine this kit was written on, **all 2847** of the account's sessions also existed in the
+gateway partition; 33 differed and the gateway's copy was the newer one (median 11 days). An
+earlier version skipped any same-named file and said nothing but `skipped=33` — a silent loss of
+the newer state of 33 conversations.
+
+Now the rule is per file, and it is in `docs/02-restore.md` step 4: identical → leave alone;
+gateway newer → replace, parking the account's copy in `replaced-sessions/`; account newer or
+unparseable → keep the account's and write it to `conflicts-<stamp>.txt`. **If neither list is
+empty, read it before you conclude the restore is done.**
+
+### Cowork is copied only partially — do not read "Cowork ✅" as "everything"
+
+`restore.sh` copies `local_*` sessions and `spaces`/`spaces.json`. It does **not** copy anything
+else in the Cowork partition: `memory/`, `usage-ledger/`, workspace directories, or
+`cowork_account_settings.json`. On a real machine those existed only on the gateway side, so they
+simply do not come across.
+
+Worse, if `spaces.json` already exists on the account side it is **not merged**, even when the two
+differ. The script now says so out loud rather than reporting success —— copy it by hand if you
+need it.
+
+### `--only` used to enable nothing and exit 0
+
+The old `--only a,b,c` intersected the selection with the source's enabled list before applying
+it, so any id that was not in that list — which is every id you would need after a merge — was
+filtered out. It printed `will enable: 0` and exited 0, under a header that read *"enable exactly
+these task ids"*.
+
+`--only` now means exactly what it says. The related trap is the default: with no arguments the
+script reads `source-enabled-tasks-*.txt`, which after a merge of two identical task sets is
+**empty** (nothing was running on the gateway). Pass `--from target-was-enabled-<stamp>.txt` to
+get the account's own routines back.
+
+### `TASK_MODE=skip` on the command line used to be ignored
+
+`config.sh` assigned `TASK_MODE="merge"` unconditionally, so `TASK_MODE=skip bash restore.sh all`
+silently ran a merge. The example config now uses `${TASK_MODE:-merge}`. If you copied an older
+`config.sh`, fix that line.
+
+### "Claude is still running" when it is not
+
+The app guard matched on the **full command line**, which meant two false positives: Squirrel's
+auto-updater (`.../Squirrel.framework/Resources/ShipIt`) counts as part of the bundle and can
+outlive a ⌘Q, and any process whose *arguments* merely contain `Applications/Claude.app` — a shell
+running `ps aux | grep Applications/Claude.app` matches itself. The guard now matches the
+executable path (`ps -o comm=`) and names ShipIt explicitly. See `scripts/lib-appguard.sh`.
+
 ### A task with an unknown model id
 
 Routines written during gateway mode may name models the real account does not expose

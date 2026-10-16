@@ -27,6 +27,10 @@ The session metadata JSON has **no account fields at all**. There is no database
 export format to convert: copy `local_*.json` files from the gateway partition into the account
 partition and the sessions reappear.
 
+One caveat, because here the target is not empty: sessions that exist on **both** sides are not a
+trivial case. `restore.sh` resolves each same-named file individually — see
+`docs/02-restore.md` step 4.
+
 ## Which direction you are going
 
 Both kits operate on the same table; only which side is the source changes.

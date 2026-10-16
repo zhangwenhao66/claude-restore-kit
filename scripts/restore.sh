@@ -99,19 +99,11 @@ echo "OK preflight"
 
 # ------------------------------------------------------------- app guard
 # The app must be fully quit: it caches scheduling state in memory and writes it back on exit.
-if pgrep -f "Applications/Claude.app" >/dev/null 2>&1; then
-  LIVE=0
-  for p in $(pgrep -f "Applications/Claude.app" 2>/dev/null || true); do
-    cmd="$(ps -o command= -p "$p" 2>/dev/null || true)"
-    [ -n "$cmd" ] || continue
-    case "$cmd" in
-      *chrome-native-host*)       continue ;;  # started by Chrome, holds no Claude data
-      *chrome_crashpad_handler*)  continue ;;  # crash reporter
-    esac
-    LIVE=$((LIVE+1))
-  done
-  [ "${LIVE}" -eq 0 ] || die "Claude Desktop is still running (${LIVE} processes). Quit it with ⌘Q and retry."
-fi
+# claude_app_pids() ignores the helpers that are not the app — see scripts/lib-appguard.sh.
+# shellcheck source=/dev/null
+source "$HERE/lib-appguard.sh"
+LIVE="$(claude_app_pids | wc -l | tr -d ' ')"
+[ "${LIVE}" -eq 0 ] || die "Claude Desktop is still running (${LIVE} process(es)). Quit it with ⌘Q and retry."
 echo "OK Claude is not running"
 
 # ------------------------------------------------------------- backup
@@ -178,16 +170,108 @@ else
   LIST="$(find "${CODE_SRC}" -maxdepth 1 -name 'local_*.json' -exec basename {} \;)"
 fi
 
-for b in ${LIST}; do
-  if [ -e "${CODE_DST}/${b}" ]; then SKIPPED=$((SKIPPED+1)); continue; fi
-  if cp -p "${CODE_SRC}/${b}" "${CODE_DST}/${b}"; then
-    echo "${CODE_DST}/${b}" >> "$MAN_S"; COPIED=$((COPIED+1))
-  else
-    FAILED=$((FAILED+1))
-  fi
-done
-echo "    copied=${COPIED} skipped=${SKIPPED} failed=${FAILED}"
-[ "${FAILED}" -eq 0 ] || die "some copies failed; do not continue"
+# Same-named files are the norm here, not an edge case: on the machine this kit was written on
+# all 2847 target sessions also existed in the source. Most are byte-identical, but a third of
+# the differing ones had a NEWER source — the session had been used on the gateway since the
+# account last saw it. Skipping those silently threw away the newer state (completedTurns, model,
+# lastAssistantUuid, publishedArtifacts, lastActivityAt). Decide per file, and never lose either
+# copy: the target's version is parked in replaced-sessions/<stamp>/ before it is overwritten.
+DEC_FILE="$ROOT/.decisions-$STAMP"
+NAMES_FILE="$ROOT/.names-$STAMP"
+REPL_DIR="$ROOT/replaced-sessions/$STAMP"
+CONF_FILE="$ROOT/conflicts-$STAMP.txt"
+MAN_R="$ROOT/manifest-replaced.txt"
+
+# The name list goes through a file, not a pipe: `python3 - <<'PY'` already consumes stdin with
+# the heredoc, so anything piped in would be silently dropped.
+printf '%s\n' ${LIST} > "$NAMES_FILE"
+python3 - "${CODE_SRC}" "${CODE_DST}" "$NAMES_FILE" > "$DEC_FILE" <<'PY'
+import json, os, sys
+
+src, dst, names_file = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def activity(path):
+    try:
+        with open(path, "rb") as fh:
+            j = json.load(fh)
+    except Exception:
+        return None
+    v = j.get("lastActivityAt") or j.get("createdAt")
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+for name in open(names_file, encoding="utf-8").read().splitlines():
+    name = name.strip()
+    if not name:
+        continue
+    a, b = os.path.join(src, name), os.path.join(dst, name)
+    if not os.path.exists(b):
+        print(f"{name}\tADD")
+        continue
+    try:
+        if open(a, "rb").read() == open(b, "rb").read():
+            print(f"{name}\tSAME")
+            continue
+    except OSError:
+        print(f"{name}\tKEEP_UNREADABLE")
+        continue
+    ta, tb = activity(a), activity(b)
+    if ta is None or tb is None:
+        # Cannot tell which is newer -> do not guess. Keep the target's, report it.
+        print(f"{name}\tKEEP_UNREADABLE")
+    elif ta > tb:
+        print(f"{name}\tREPLACE")
+    else:
+        print(f"{name}\tKEEP_TARGET_NEWER")
+PY
+
+COPIED=0; SKIPPED=0; FAILED=0; REPLACED=0; KEPT=0
+while IFS="$(printf '\t')" read -r b decision; do
+  [ -n "${b}" ] || continue
+  case "${decision}" in
+    ADD)
+      if cp -p "${CODE_SRC}/${b}" "${CODE_DST}/${b}"; then
+        echo "${CODE_DST}/${b}" >> "$MAN_S"; COPIED=$((COPIED+1))
+      else
+        FAILED=$((FAILED+1))
+      fi
+      ;;
+    SAME)
+      SKIPPED=$((SKIPPED+1))
+      ;;
+    REPLACE)
+      mkdir -p "$REPL_DIR"
+      if ! cp -p "${CODE_DST}/${b}" "${REPL_DIR}/${b}"; then FAILED=$((FAILED+1)); continue; fi
+      printf '%s\t%s\n' "${CODE_DST}/${b}" "${REPL_DIR}/${b}" >> "$MAN_R"
+      if cp -p "${CODE_SRC}/${b}" "${CODE_DST}/${b}"; then
+        REPLACED=$((REPLACED+1))
+      else
+        FAILED=$((FAILED+1))
+      fi
+      ;;
+    KEEP_TARGET_NEWER|KEEP_UNREADABLE)
+      KEPT=$((KEPT+1)); echo "${CODE_DST}/${b}  (${decision})" >> "$CONF_FILE"
+      ;;
+    *)
+      SKIPPED=$((SKIPPED+1))
+      ;;
+  esac
+done < "$DEC_FILE"
+
+echo "    copied=${COPIED} identical=${SKIPPED} replaced=${REPLACED} kept-target=${KEPT} failed=${FAILED}"
+if [ "${REPLACED}" -gt 0 ]; then
+  echo "    ${REPLACED} session(s) were UPDATED from the gateway; the account's older copy of each is"
+  echo "    parked in replaced-sessions/${STAMP}/ and listed in manifest-replaced.txt."
+fi
+if [ "${KEPT}" -gt 0 ]; then
+  echo "    ${KEPT} session(s) differ and the ACCOUNT's copy was kept (it was newer, or the pair"
+  echo "    could not be compared). Details: $(basename "$CONF_FILE")"
+fi
+[ "${FAILED}" -eq 0 ] || die "some copies failed; do not continue. Nothing else was written; sessions already copied can be undone with: bash rollback.sh"
 echo "    target now $(cnt "${CODE_DST}") sessions; source still $(cnt "${CODE_SRC}")"
 [ "$(cnt "${CODE_SRC}")" = "${SRC_N}" ] || die "source session count changed!"
 
@@ -203,11 +287,18 @@ EOF
   exit 0
 fi
 
-# bring along archive/backlog state if present and not already there
+# bring along archive/backlog state if present and not already there.
+# Recorded in the manifest, or rollback cannot undo the copy (it used to be untracked, so a
+# rollback left archived-sessions.idx and backlog behind — see docs/05-pitfalls.md).
 for extra in archived-sessions.idx backlog; do
-  if [ -e "${CODE_SRC}/${extra}" ] && [ ! -e "${CODE_DST}/${extra}" ]; then
+  [ -e "${CODE_SRC}/${extra}" ] || continue
+  if [ ! -e "${CODE_DST}/${extra}" ]; then
     cp -Rp "${CODE_SRC}/${extra}" "${CODE_DST}/${extra}"
+    echo "${CODE_DST}/${extra}" >> "$MAN_S"
     echo "    carried over ${extra}"
+  elif ! diff -rq "${CODE_SRC}/${extra}" "${CODE_DST}/${extra}" >/dev/null 2>&1; then
+    echo "    NOTE: ${extra} exists on both sides and differs; the target's copy was kept."
+    echo "          The gateway's archive state was NOT brought over."
   fi
 done
 
@@ -216,7 +307,9 @@ echo "--- scheduled tasks (mode=${TASK_MODE}, imported DISABLED)"
 if [ -f "${TASK_DST}" ]; then
   cp -p "${TASK_DST}" "${TASK_DST}.pre-import-backup-${STAMP}"
 else
+  # Marked so rollback knows the correct undo is to DELETE this file, not restore one.
   echo "    (no target scheduled-tasks.json to back up; a new one will be created)"
+  echo "${TASK_DST}" > "$ROOT/.tasks-created-by-restore"
 fi
 cp -p "${TASK_SRC}" "$ROOT/source-tasks-${STAMP}.json"
 
@@ -353,8 +446,10 @@ else:
 
 still_enabled = [x["id"] for x in final if x.get("enabled")]
 # "lost" = was running in the account, still present after the merge, now disabled because the
-# gateway supplied a newer definition for the same id.
-lost = [i for i in dst_was_enabled if i in src_set and i not in src_was_enabled]
+# gateway supplied a newer definition for the same id. In skip mode nothing is written, so
+# nothing can have been lost — without this guard the report claimed simultaneously that N tasks
+# were still enabled AND that the same N had just been disabled.
+lost = [i for i in dst_was_enabled if i in src_set and i not in src_was_enabled] if write else []
 
 print(f"    added={len(added)}  updated={len(updated)}  kept(account-only)={len(kept)}  "
       f"dropped={len(dropped)}  total now={len(final)}")
@@ -371,15 +466,18 @@ def block(title, ids):
 
 
 with open(os.path.join(out_root, f"source-enabled-tasks-{stamp}.txt"), "w") as f:
-    f.write("Tasks that were ENABLED in the SOURCE (the gateway deployment).\n"
-            "Restore exactly this set, in batches, and only after the user confirms:\n"
+    f.write("# Tasks that were ENABLED in the SOURCE (the gateway deployment).\n"
+            "# Apply with:  bash scripts/restore-enabled.sh --from <this file>\n"
+            "# (the '#' header is skipped by the parser; every other line is one task id)\n"
             + "\n".join(src_was_enabled) + "\n")
 
 with open(os.path.join(out_root, f"target-was-enabled-{stamp}.txt"), "w") as f:
-    f.write("Tasks that were ENABLED in the TARGET (the account) BEFORE this restore.\n"
-            "Any of these whose id also exists on the gateway side was switched off by the\n"
-            "import. Re-enabling one is a deliberate act: the task DEFINITION now comes from\n"
-            "the gateway, so check its model id before turning it back on.\n"
+    f.write("# Tasks that were ENABLED in the TARGET (the account) BEFORE this restore.\n"
+            "# Any of these whose id also exists on the gateway side was switched off by the\n"
+            "# import: a colliding id takes the gateway's definition, and it is imported\n"
+            "# disabled. If you want them running again, apply this file deliberately:\n"
+            "#     bash scripts/restore-enabled.sh --from <this file>\n"
+            "# ...and check the model id first, because the definition is now the gateway's.\n"
             + "\n".join(dst_was_enabled) + "\n")
 
 with open(os.path.join(out_root, f"task-merge-report-{stamp}.txt"), "w") as f:
@@ -404,24 +502,47 @@ echo "    what changed               -> task-merge-report-${STAMP}.txt   (read t
 if [ "${MIGRATE_COWORK:-0}" = "1" ]; then
   echo "--- Cowork"
   touch "$MAN_C"; n=0
-  CL="$(find "${COW_SRC}" -maxdepth 1 -name 'local_*.json' -exec basename {} \;)"
+  CL="$(find "${COW_SRC}" -maxdepth 1 -name 'local_*.json' -exec basename {} \; 2>/dev/null || true)"
   for b in ${CL}; do
     stem="${b%.json}"
-    [ -f "${COW_DST}/${b}" ] && continue
-    cp -c "${COW_SRC}/${b}" "${COW_DST}/${b}" 2>/dev/null || cp "${COW_SRC}/${b}" "${COW_DST}/${b}"
-    if [ -d "${COW_SRC}/${stem}" ] && [ ! -d "${COW_DST}/${stem}" ]; then
-      cp -Rc "${COW_SRC}/${stem}" "${COW_DST}/${stem}" 2>/dev/null || cp -R "${COW_SRC}/${stem}" "${COW_DST}/${stem}"
+    if [ -f "${COW_DST}/${b}" ]; then
+      if ! cmp -s "${COW_SRC}/${b}" "${COW_DST}/${b}"; then
+        echo "    NOTE: ${b} exists on both sides and differs; the target's copy was kept."
+      fi
+      continue
     fi
-    echo "${COW_DST}/${b}" >> "$MAN_C"; echo "${COW_DST}/${stem}" >> "$MAN_C"
+    cp -c "${COW_SRC}/${b}" "${COW_DST}/${b}" 2>/dev/null || cp "${COW_SRC}/${b}" "${COW_DST}/${b}"
+    echo "${COW_DST}/${b}" >> "$MAN_C"
+    # Only record the workspace directory if we actually created it. It used to be appended
+    # unconditionally — even when the previous line decided the directory already existed — so
+    # rollback would delete a directory the restore never touched. On a real machine there is a
+    # session whose source, but not target, carries a workspace, so this path does get taken.
+    if [ -d "${COW_SRC}/${stem}" ]; then
+      if [ ! -e "${COW_DST}/${stem}" ]; then
+        cp -Rc "${COW_SRC}/${stem}" "${COW_DST}/${stem}" 2>/dev/null || cp -R "${COW_SRC}/${stem}" "${COW_DST}/${stem}"
+        echo "${COW_DST}/${stem}" >> "$MAN_C"
+      else
+        echo "    NOTE: ${stem}/ exists on both sides; the target's workspace was kept (not merged)."
+      fi
+    fi
     n=$((n+1))
   done
   for e in spaces spaces.json; do
-    if [ -e "${COW_SRC}/${e}" ] && [ ! -e "${COW_DST}/${e}" ]; then
+    [ -e "${COW_SRC}/${e}" ] || continue
+    if [ ! -e "${COW_DST}/${e}" ]; then
       cp -Rc "${COW_SRC}/${e}" "${COW_DST}/${e}" 2>/dev/null || cp -R "${COW_SRC}/${e}" "${COW_DST}/${e}"
       echo "${COW_DST}/${e}" >> "$MAN_C"
+    elif [ -f "${COW_SRC}/${e}" ] && ! cmp -s "${COW_SRC}/${e}" "${COW_DST}/${e}"; then
+      echo "    NOTE: ${e} exists on both sides and differs; the gateway's copy was NOT merged."
+      echo "          Copy it by hand if you need it: ${COW_SRC}/${e}  ->  ${COW_DST}/${e}"
+    elif [ -d "${COW_SRC}/${e}" ] && ! diff -rq "${COW_SRC}/${e}" "${COW_DST}/${e}" >/dev/null 2>&1; then
+      echo "    NOTE: ${e}/ exists on both sides and differs; the gateway's copy was NOT merged."
+      echo "          Source: ${COW_SRC}/${e}"
     fi
   done
   echo "    copied ${n} Cowork sessions"
+  echo "    note: only local_* sessions and spaces/spaces.json are handled. Anything else in the"
+  echo "          Cowork partition (memory/, usage-ledger/, workspace dirs, settings) is NOT copied."
 fi
 
 echo

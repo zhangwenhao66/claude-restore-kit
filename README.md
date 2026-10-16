@@ -106,11 +106,12 @@ bash scripts/restore-enabled.sh --limit 5
 | 资产 | 搬得回来？ | 说明 |
 |---|---|---|
 | 对话正文 | ✅ | 本来就共享，App 只差元数据 |
-| 会话列表（标题、文件夹分组） | ✅ | 把 `local_*.json` 复制进账号分区 |
+| 会话列表（标题、文件夹分组） | ✅ | 同名时按 `lastActivityAt` 取更新的那份，被覆盖的旧版存进 `replaced-sessions/` |
 | 定时任务 / Routine | ✅ | **按 id 合并**，停用状态导入；之后分批恢复 |
 | 技能、记忆、`CLAUDE.md` | ✅ | 不按账号隔离，什么都不用做 |
 | 项目文件与 git | ✅ | 从头到尾没碰 |
-| Cowork 会话 + 工作区 | ✅ | 独立分区，同样的方法（注意目录名是截断的） |
+| Cowork 会话 | ✅ | 独立分区，同样的方法（注意目录名是截断的） |
+| Cowork 工作区 / memory / 用量账本 | ❌ | 只搬 `local_*` 和 `spaces`，其余不搬，脚本会明说 |
 | 浏览器自动化 | ⚠️ | 有付费套餐就能换回官方扩展；否则继续用开源桥，见 docs/04 |
 | 插件 | ❌ | 按账号从市场同步，需重装 |
 | 已发布的 Artifact / claude.ai 网页对话 | ❌ | 绑死在账号上，无法找回 |
@@ -220,11 +221,12 @@ bash scripts/restore-enabled.sh --limit 5
 | Asset | Preserved? | Notes |
 |---|---|---|
 | Conversation transcripts | ✅ | Already shared; the App just needs the metadata |
-| Session list (titles, folders) | ✅ | Copy `local_*.json` into the account partition |
+| Session list (titles, folders) | ✅ | Same-named files: the newer `lastActivityAt` wins; the displaced copy is kept in `replaced-sessions/` |
 | Scheduled tasks / routines | ✅ | **Merged by id**, imported disabled; re-enable in batches |
 | Skills, memory, `CLAUDE.md` | ✅ | Not account-scoped — nothing to do |
 | Project files & git | ✅ | Never touched |
-| Cowork sessions + workspaces | ✅ | Separate partition, same technique (truncated dir names) |
+| Cowork sessions | ✅ | Separate partition, same technique (truncated dir names) |
+| Cowork workspaces / memory / usage ledger | ❌ | Only `local_*` and `spaces` are copied; the script says so |
 | Browser automation | ⚠️ | Paid plan → switch back to the official extension; otherwise keep the bridge. See docs/04 |
 | Plugins | ❌ | Marketplace-synced; reinstall them |
 | Published Artifacts / claude.ai chats | ❌ | Tied to the account; unrecoverable |

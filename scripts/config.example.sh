@@ -35,7 +35,10 @@ DST_ORG_COW=""
 #           exist only in the account are left untouched, enabled state and all
 #   replace the account's task list is replaced by the gateway's (the old file is backed up)
 #   skip    leave the account's task list alone; restore sessions and Cowork only
-TASK_MODE="merge"
+# `${TASK_MODE:-merge}` so an environment override (TASK_MODE=skip bash restore.sh all) is not
+# silently swallowed by this file — it used to be a plain assignment, which made the env var
+# look like it worked while config.sh quietly won.
+TASK_MODE="${TASK_MODE:-merge}"
 
 # ---- App data directories ----
 # Normal account mode uses "Claude"; third-party/gateway ("3p") mode uses "Claude-3p".
