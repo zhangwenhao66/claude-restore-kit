@@ -1,0 +1,15 @@
+# Local configuration (contains your account/org UUIDs)
+scripts/config.sh
+
+# Restore artifacts — these contain YOUR data, never commit them
+backup-*/
+manifest-sessions.txt
+manifest-cowork.txt
+restore-*.log
+source-tasks-*.json
+source-enabled-tasks-*.txt
+task-merge-report-*.txt
+.backup-done
+
+# OS noise
+.DS_Store
