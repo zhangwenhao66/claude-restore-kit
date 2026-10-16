@@ -19,6 +19,7 @@ if pgrep -f "Applications/Claude.app" >/dev/null 2>&1; then
   LIVE=0
   for p in $(pgrep -f "Applications/Claude.app" 2>/dev/null || true); do
     cmd="$(ps -o command= -p "$p" 2>/dev/null || true)"
+    [ -n "$cmd" ] || continue
     case "$cmd" in
       *chrome-native-host*|*chrome_crashpad_handler*) continue ;;
     esac

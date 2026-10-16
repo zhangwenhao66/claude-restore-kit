@@ -14,6 +14,9 @@ works", and a config check is not a connection check.
 
 ## Gateway residue (run `bash scripts/check-gateway.sh`)
 
+The script exits **1** if it found any PROBLEM item, so it can be used as a gate — but it is a
+report first: read the items, do not just look at the exit code.
+
 - [ ] No `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` in `~/.zshenv`,
       `~/.zprofile`, `~/.zshrc`, `~/.bash_profile`, `~/.profile`, `~/.bashrc`, or in the live
       environment.
@@ -31,14 +34,15 @@ works", and a config check is not a connection check.
 
 ## After `restore.sh all`
 
-- [ ] Soul session count now matches the source count
+- [ ] Source session count now matches the target count
       (`find <CODE_DST> -maxdepth 1 -name 'local_*.json' | wc -l`).
 - [ ] The source count is **unchanged** — proof that nothing was moved.
-- [ ] Routine count in the UI matches `len(scheduledTasks)` in
-      `task-merge-report-*.txt`.
-- [ ] **Every task you imported is disabled.** `check` the UI, do not trust the script's own
-      print.
+- [ ] Routine count in the UI matches `total now=` in `task-merge-report-*.txt`.
+- [ ] **Every task you imported is disabled.** Check in the UI, do not trust the script's print.
 - [ ] Tasks that existed only in the account are still there, with their original enabled state.
+- [ ] Anything listed under *"WAS running in the account, now DISABLED"* in
+      `task-merge-report-*.txt` is a decision you have made on purpose, not something you
+      discover later. `target-was-enabled-*.txt` is the full list of what the account had on.
 - [ ] Cowork chats are present (if `MIGRATE_COWORK=1`).
 - [ ] Archived sessions and routine-spawned sessions legitimately do **not** appear in the
       folder list. Confirm the user understands this before they conclude something is missing.

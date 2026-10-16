@@ -49,9 +49,9 @@ bash scripts/restore.sh check
 ```
 
 Read-only, safe while Claude is running. It refuses on: missing source or target partition,
-source and target being the same, an empty source, less than 60 GB free, or Claude still
-running (the app caches scheduling state in memory and writes it back on exit, which would
-undo the import).
+source and target being the same, an empty source, less than 60 GB free, or an invalid
+`TASK_MODE`. It does **not** check whether Claude is running — `check` exits before that guard,
+because it writes nothing. `test` and `all` do run it, and refuse.
 
 Unlike the outbound kit, a **non-empty target is expected here and is not an error** — see the
 next step.
@@ -70,11 +70,27 @@ So `restore.sh` merges instead of refusing, and `TASK_MODE` decides how:
 
 | `TASK_MODE` | Behaviour | Use when |
 |---|---|---|
-| `merge` (default) | ids present on both sides are updated from the gateway; ids that exist only in the account are left completely alone | almost always |
+| `merge` (default) | ids present on both sides take the **gateway's** definition; ids that exist only in the account are left completely alone, enabled state included | almost always |
 | `replace` | the account's task list is replaced by the gateway's (old file backed up to `scheduled-tasks.json.pre-import-backup-*`) | the account is brand new and has nothing of its own |
-| `skip` | the account's task list is untouched; only sessions and Cowork are restored | you intend to rebuild routines by hand |
+| `skip` | the account's `scheduled-tasks.json` is not written at all; only sessions and Cowork are restored | you intend to rebuild routines by hand |
 
-Two deliberate choices inside `merge`:
+> **Read this before choosing `merge` — the id collision is the normal case, not an edge case.**
+> Task ids here are human-readable slugs (`daily-backlink-building`, `alpha-content-publishing`),
+> **not** uuids. If both deployments run the same task set, *every* id collides. On the machine
+> this kit was written on it was **110 out of 110**, with the account side running 76 of them.
+>
+> The consequence: for a colliding id there is one slot, the gateway's definition wins, and the
+> task is imported **disabled**. An account-side routine that was running therefore stops. That
+> is deliberate — the kit never starts a task by itself — but it means the restore can switch off
+> work you had going, so `restore.sh` records it:
+>
+> - `target-was-enabled-<stamp>.txt` — every task that was enabled in the **account** before the
+>   import. If you want any of them running again, restore them deliberately, and check the model
+>   id first, because the definition is now the gateway's.
+> - `task-merge-report-<stamp>.txt`, section *"WAS running in the account, now DISABLED"* — the
+>   subset that actually got switched off by this run.
+
+Two more deliberate choices inside `merge`:
 
 - **Every imported task comes in `enabled: false`, with `lastScheduledFor` and
   `missedRunScanFloor` stamped to now.** Without the stamp, Claude Desktop replays every window
@@ -84,9 +100,15 @@ Two deliberate choices inside `merge`:
   *own* tasks replay missed windows — a side effect of a restore that was supposed to be about
   the gateway's tasks.
 
-After the run, read `task-merge-report-*.txt`. It lists exactly four things: what was added,
-what was updated, what was left alone, and what is enabled right now. If the "left enabled"
-list is not what you expect, stop and fix it before doing anything else.
+Duplicate ids are handled by keeping the first occurrence and reporting the rest, and the result
+is validated **before** anything is written: if the output would contain a duplicate id, or an
+imported task would be left enabled, the script stops with nothing written. A half-written task
+file is worse than no task file.
+
+After the run, read `task-merge-report-*.txt`. It lists five things: what was added, what was
+updated, what was kept (account-only), what was dropped (only in `replace` mode), what is still
+enabled, and which previously-running account tasks this import disabled. If the "still enabled"
+or "now DISABLED" lists are not what you expect, stop and deal with it before enabling anything.
 
 ## Step 4 — copy
 

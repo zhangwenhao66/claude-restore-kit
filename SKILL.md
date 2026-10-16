@@ -37,8 +37,11 @@ both cause silent failures.
 
 1. **The target is a live account, not a fresh partition.** It may already hold its own sessions
    and its own routines. The outbound scripts refuse to import when the target has tasks; that
-   would be wrong here. Tasks are **merged by id**: shared ids are updated from the gateway,
-   account-only ids are left untouched, enabled state and all.
+   would be wrong here. Tasks are **merged by id**.
+   **Task ids are slugs (`daily-backlink-building`), not uuids**, so if both deployments run the
+   same task set every id collides — that is the normal case. For a colliding id the gateway's
+   definition wins and the task is imported **disabled**, which means an account-side routine
+   that was running stops. Only ids that exist *solely* in the account are left untouched.
 2. **The machine is still pointed at the gateway.** Logging out does not remove
    `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` from the shell profiles. Every new terminal and
    every routine keeps calling the gateway, and **nothing errors**. This must be checked before
@@ -59,9 +62,16 @@ These mirror the safety design of the scripts in `scripts/`. Do not skip them.
 4. **Import scheduled tasks with `enabled = false`, and stamp `lastScheduledFor` /
    `missedRunScanFloor` to the import time.** Claude Desktop replays missed windows; some tasks
    publish, post, or send email. That replay is irreversible.
-5. **Never enable a task the user had disabled.** The authoritative "what was paused" list is
-   the *source* partition's `scheduledTasks[].enabled`, read **before** importing. A migration
-   that forces everything to `false` and then restores from its own guess destroys that.
+5. **Never enable a task the user had disabled, in either deployment.** Two lists matter, and
+   both are read **before** anything is written:
+   - the *source* (gateway) partition's `scheduledTasks[].enabled` — written to
+     `source-enabled-tasks-<stamp>.txt`;
+   - the *target* (account) partition's `scheduledTasks[].enabled` — written to
+     `target-was-enabled-<stamp>.txt`. This one is not optional here: because ids are slugs,
+     colliding ids get imported disabled, and without this list there is no record of which of
+     the account's own routines were running.
+   A migration that forces everything to `false` and then restores from its own guess destroys
+   both.
 6. **Do not clear the target's `recordedSkips`.** For an empty target that is fine (the outbound
    kit does it); here it can make the account's *own* tasks replay missed windows.
 7. **The App must be fully quit** before touching its data directory. The scripts check and
@@ -117,7 +127,9 @@ After `test`, ask the user to reopen Claude and confirm sessions appear and a tr
 Only then run `all`.
 
 After `all`, read `task-merge-report-*.txt` and tell the user explicitly: what was added, what
-was updated, what was left alone, and **what is enabled right now**.
+was updated, what was kept (account-only), **what is enabled right now**, and — most important —
+**which account routines this import switched off**. That last list is the one a user will be
+angry to discover later, so say it out loud rather than letting them find it in a file.
 
 ### Step 4 — Verify (do not skip)
 

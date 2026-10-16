@@ -5,7 +5,6 @@ scripts/config.sh
 backup-*/
 manifest-sessions.txt
 manifest-cowork.txt
-restore-*.log
 source-tasks-*.json
 source-enabled-tasks-*.txt
 task-merge-report-*.txt

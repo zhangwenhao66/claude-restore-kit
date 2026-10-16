@@ -29,7 +29,6 @@ source "$HERE/config.sh"
 
 MODE="${1:-check}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-LOG="$ROOT/restore-$MODE-$STAMP.log"
 MAN_S="$ROOT/manifest-sessions.txt"
 MAN_C="$ROOT/manifest-cowork.txt"
 
@@ -54,8 +53,22 @@ echo "    sessions: source=${SRC_N} target=${DST_N}"
 TASK_SRC="${CODE_SRC}/scheduled-tasks.json"
 TASK_DST="${CODE_DST}/scheduled-tasks.json"
 [ -f "${TASK_SRC}" ] || die "source has no scheduled-tasks.json"
-TASK_SRC_N="$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['scheduledTasks']))" "${TASK_SRC}")"
-TASK_DST_N="$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['scheduledTasks']))" "${TASK_DST}")"
+# Never let a missing or corrupt target file escape as a bare traceback: `check` is step 3 of
+# the README, and a Python stack trace there reads like the kit is broken.
+task_count() {
+  python3 - "$1" <<'PY'
+import json, sys
+try:
+    print(len(json.load(open(sys.argv[1])).get("scheduledTasks", [])))
+except Exception:
+    print(0)
+PY
+}
+TASK_SRC_N="$(task_count "${TASK_SRC}")"
+TASK_DST_N="$(task_count "${TASK_DST}")"
+if [ ! -f "${TASK_DST}" ]; then
+  echo "    note    : the account has no scheduled-tasks.json yet; one will be created"
+fi
 echo "    tasks   : source=${TASK_SRC_N} target=${TASK_DST_N}"
 
 # The target here is a LIVE account, not a fresh gateway partition, so it may already have
@@ -102,8 +115,21 @@ fi
 echo "OK Claude is not running"
 
 # ------------------------------------------------------------- backup
+# A reused backup is only a backup if it is still there. Deleting backup-* to free space
+# (a normal thing to do between `test` and `all`) or moving the repo would otherwise leave
+# .backup-done pointing at a path that no longer exists — and the run would then write into
+# a live account partition with no backup at all, while reporting success.
+BK=""
 if [ -f "$ROOT/.backup-done" ]; then
-  BK="$(cat "$ROOT/.backup-done")"
+  CAND="$(cat "$ROOT/.backup-done" 2>/dev/null || true)"
+  if [ -n "${CAND}" ] && [ -d "${CAND}/app-data" ] && [ -d "${CAND}/dot-claude" ]; then
+    BK="${CAND}"
+  else
+    echo "--- backup: previous backup at '${CAND:-<empty>}' is gone or incomplete; making a new one"
+    rm -f "$ROOT/.backup-done"
+  fi
+fi
+if [ -n "${BK}" ]; then
   echo "--- backup: reusing ${BK}"
 else
   BK="$ROOT/backup-$STAMP"; mkdir -p "$BK"
@@ -187,24 +213,73 @@ done
 
 # ------------------------------------------------------------- tasks
 echo "--- scheduled tasks (mode=${TASK_MODE}, imported DISABLED)"
-cp -p "${TASK_DST}" "${TASK_DST}.pre-import-backup-${STAMP}"
+if [ -f "${TASK_DST}" ]; then
+  cp -p "${TASK_DST}" "${TASK_DST}.pre-import-backup-${STAMP}"
+else
+  echo "    (no target scheduled-tasks.json to back up; a new one will be created)"
+fi
 cp -p "${TASK_SRC}" "$ROOT/source-tasks-${STAMP}.json"
 
 set +e
-python3 - "${TASK_SRC}" "${TASK_DST}" "$ROOT/source-enabled-tasks-${STAMP}.txt" "${TASK_MODE}" "$ROOT/task-merge-report-${STAMP}.txt" <<'PY'
+python3 - "${TASK_SRC}" "${TASK_DST}" "${TASK_MODE}" "$ROOT" "$STAMP" <<'PY'
 import copy, datetime, json, os, sys
 
-src_path, dst_path, enabled_report, mode, merge_report = sys.argv[1:6]
+src_path, dst_path, mode, out_root, stamp = sys.argv[1:6]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
-src_tasks = json.load(open(src_path))["scheduledTasks"]
-dst_doc = json.load(open(dst_path))
+src_tasks = json.load(open(src_path)).get("scheduledTasks", [])
+try:
+    dst_doc = json.load(open(dst_path))
+except FileNotFoundError:
+    dst_doc = {}
+    print("    note: the account had no scheduled-tasks.json; creating one")
+except Exception as exc:
+    print(f"    ABORT: the account's scheduled-tasks.json is not readable ({exc}).")
+    print("           Nothing was written. Fix or move that file, then re-run.")
+    sys.exit(1)
+if not isinstance(dst_doc, dict):
+    print("    ABORT: the account's scheduled-tasks.json is not a JSON object. Nothing was written.")
+    sys.exit(1)
 dst_tasks = dst_doc.get("scheduledTasks", [])
+
+
+def dedupe(tasks, side):
+    """Task ids here are human-readable slugs ("daily-backlink-building"), not uuids, so a
+    duplicate is a real possibility. Keep the first occurrence and report the rest: writing a
+    file in which two tasks share an id has undefined behaviour in the App, and silently
+    dropping one would be worse."""
+    seen, kept, dupes = set(), [], []
+    for t in tasks:
+        tid = t.get("id")
+        if tid is None:
+            dupes.append("<task with no id>")
+            continue
+        if tid in seen:
+            dupes.append(str(tid))
+            continue
+        seen.add(tid)
+        kept.append(t)
+    if dupes:
+        print(f"    WARNING: {len(dupes)} duplicate / untagged task(s) in the {side} list: "
+              f"{', '.join(dupes[:10])}")
+    return kept
+
+
+src_tasks = dedupe(src_tasks, "source (gateway)")
+dst_tasks = dedupe(dst_tasks, "target (account)")
+
 src_ids = [x["id"] for x in src_tasks]
-src_was_enabled = [x["id"] for x in src_tasks if x.get("enabled")]
+src_set = set(src_ids)
+src_was_enabled = sorted(x["id"] for x in src_tasks if x.get("enabled"))
+
+# Captured BEFORE anything is written. Task ids are slugs, so "both deployments have this id"
+# is the normal case, not an edge case. When that happens the gateway's definition wins and the
+# task is imported disabled — which means an account-side routine that was running gets turned
+# off. Without this list there is no way to know which ones, and no way to turn them back on.
+dst_was_enabled = sorted(x["id"] for x in dst_tasks if x.get("enabled"))
 
 
-def stamp(task):
+def stamp_task(task):
     """Import one task DISABLED, with its missed-run window pushed to now.
 
     Without the stamp, Claude Desktop replays every window the task missed while it sat
@@ -219,67 +294,111 @@ def stamp(task):
 
 
 if mode == "skip":
-    out, added, updated, kept, dropped = dst_doc, [], [], [x["id"] for x in dst_tasks], []
+    merged = dst_tasks
+    added, updated, dropped = [], [], []
+    kept = [x["id"] for x in dst_tasks]
+    write = False
 elif mode == "replace":
-    dropped = [x["id"] for x in dst_tasks]
-    out = copy.deepcopy(dst_doc)
-    out["scheduledTasks"] = [stamp(x) for x in src_tasks]
+    merged = [stamp_task(x) for x in src_tasks]
     added, updated, kept = src_ids, [], []
+    dropped = [x["id"] for x in dst_tasks]
+    write = True
 else:  # merge
-    src_set = set(src_ids)
-    index = {x["id"]: i for i, x in enumerate(dst_tasks) if "id" in x}
+    index = {x["id"]: i for i, x in enumerate(dst_tasks)}   # dst_tasks is already deduped
     merged = copy.deepcopy(dst_tasks)
     added, updated = [], []
     for x in src_tasks:
         if x["id"] in index:
-            merged[index[x["id"]]] = stamp(x)
+            merged[index[x["id"]]] = stamp_task(x)
             updated.append(x["id"])
         else:
-            merged.append(stamp(x))
+            index[x["id"]] = len(merged)     # keep the index in step, or a repeated source
+            merged.append(stamp_task(x))     # id would be appended twice
             added.append(x["id"])
-    kept = [x["id"] for x in dst_tasks if x.get("id") not in src_set]
+    kept = [x["id"] for x in dst_tasks if x["id"] not in src_set]
     dropped = []
+    write = True
+
+# ------------------------------------------------------------------ validate BEFORE writing
+# Everything below used to run after os.replace, which meant a bad merge was already on disk
+# by the time the script died — half-migrated, with an enabled task carrying a stale floor.
+problems = []
+out_ids = [t["id"] for t in merged]
+if len(out_ids) != len(set(out_ids)):
+    dupes = sorted({i for i in out_ids if out_ids.count(i) > 1})
+    problems.append(f"the result would contain duplicate ids: {dupes[:10]}")
+if write:
+    leaked = [t["id"] for t in merged if t.get("enabled") and t["id"] in src_set]
+    if leaked:
+        problems.append(f"imported task(s) would be left ENABLED: {leaked[:10]}")
+if problems:
+    print("    VALIDATION FAILED — nothing was written:")
+    for p in problems:
+        print("      - " + p)
+    sys.exit(1)
+
+if write:
     out = copy.deepcopy(dst_doc)
     out["scheduledTasks"] = merged
     # Deliberately NOT touching out["recordedSkips"]: the target is a live account with its
     # own routines, and clearing its skip ledger could make those replay missed windows.
+    tmp = dst_path + ".tmp"
+    json.dump(out, open(tmp, "w"), ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, dst_path)
+    final = json.load(open(dst_path))["scheduledTasks"]
+else:
+    final = dst_tasks
+    print("    TASK_MODE=skip — the account's scheduled-tasks.json was not written")
 
-tmp = dst_path + ".tmp"
-json.dump(out, open(tmp, "w"), ensure_ascii=False, indent=2)
-os.chmod(tmp, 0o600)
-os.replace(tmp, dst_path)
-
-final = json.load(open(dst_path))["scheduledTasks"]
 still_enabled = [x["id"] for x in final if x.get("enabled")]
-imported = set(src_ids) if mode != "skip" else set()
-bad = [i for i in still_enabled if i in imported]
+# "lost" = was running in the account, still present after the merge, now disabled because the
+# gateway supplied a newer definition for the same id.
+lost = [i for i in dst_was_enabled if i in src_set and i not in src_was_enabled]
 
-print(f"    added={len(added)}  updated={len(updated)}  kept(target-only)={len(kept)}  "
+print(f"    added={len(added)}  updated={len(updated)}  kept(account-only)={len(kept)}  "
       f"dropped={len(dropped)}  total now={len(final)}")
 if still_enabled:
-    print(f"    note: {len(still_enabled)} task(s) are ENABLED — those were the account's own, left alone")
+    print(f"    note: {len(still_enabled)} task(s) are still ENABLED — account-only ids, never touched")
+if lost:
+    print(f"    NOTE: {len(lost)} task(s) were RUNNING in the account and are now DISABLED")
+    print(f"          (same id on the gateway side, so the gateway's definition replaced them).")
+    print(f"          The list is in target-was-enabled-{stamp}.txt")
+
 
 def block(title, ids):
     return f"{title} ({len(ids)}):\n" + "\n".join("  " + i for i in ids) + "\n"
 
-open(merge_report, "w").write(
-    block("added from the gateway", added)
-    + "\n" + block("updated from the gateway (target had the same id)", updated)
-    + "\n" + block("kept, existed only in the account", kept)
-    + "\n" + block("dropped (TASK_MODE=replace only)", dropped)
-    + "\n" + block("left ENABLED after this run", still_enabled)
-)
-open(enabled_report, "w").write(
-    "Tasks that were ENABLED in the SOURCE (the gateway deployment). Restore exactly this set, "
-    "in batches, and only after the user confirms:\n" + "\n".join(src_was_enabled) + "\n")
 
-sys.exit(0 if not bad else 1)
+with open(os.path.join(out_root, f"source-enabled-tasks-{stamp}.txt"), "w") as f:
+    f.write("Tasks that were ENABLED in the SOURCE (the gateway deployment).\n"
+            "Restore exactly this set, in batches, and only after the user confirms:\n"
+            + "\n".join(src_was_enabled) + "\n")
+
+with open(os.path.join(out_root, f"target-was-enabled-{stamp}.txt"), "w") as f:
+    f.write("Tasks that were ENABLED in the TARGET (the account) BEFORE this restore.\n"
+            "Any of these whose id also exists on the gateway side was switched off by the\n"
+            "import. Re-enabling one is a deliberate act: the task DEFINITION now comes from\n"
+            "the gateway, so check its model id before turning it back on.\n"
+            + "\n".join(dst_was_enabled) + "\n")
+
+with open(os.path.join(out_root, f"task-merge-report-{stamp}.txt"), "w") as f:
+    f.write(block("added from the gateway", added)
+            + "\n" + block("updated from the gateway (the account had the same id)", updated)
+            + "\n" + block("kept — existed only in the account", kept)
+            + "\n" + block("dropped (TASK_MODE=replace only)", dropped)
+            + "\n" + block("still ENABLED after this run", still_enabled)
+            + "\n" + block("WAS running in the account, now DISABLED "
+                           "(the gateway's definition replaced it)", lost))
+
+sys.exit(0)
 PY
 RC=$?
 set -e
-[ "${RC}" -eq 0 ] || die "task import verification failed. Roll back with: bash rollback.sh"
-echo "    enabled list   -> source-enabled-tasks-${STAMP}.txt"
-echo "    what changed   -> task-merge-report-${STAMP}.txt   (read this before enabling anything)"
+[ "${RC}" -eq 0 ] || die "task validation failed. Nothing was written. Roll back with: bash rollback.sh"
+echo "    enabled in the gateway     -> source-enabled-tasks-${STAMP}.txt"
+echo "    enabled in the account was -> target-was-enabled-${STAMP}.txt"
+echo "    what changed               -> task-merge-report-${STAMP}.txt   (read this first)"
 
 # ------------------------------------------------------------- cowork
 if [ "${MIGRATE_COWORK:-0}" = "1" ]; then

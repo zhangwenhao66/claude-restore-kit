@@ -45,14 +45,14 @@ report_partitions() {
       say "    org    : $(basename "$org")"
       local tj="$org/scheduled-tasks.json"
       if [ -f "$tj" ]; then
-        python3 - "$tj" <<'PY' 2>/dev/null || say "    (could not parse scheduled-tasks.json)"
+        python3 - "$tj" "$label" <<'PY' 2>/dev/null || say "    (could not parse scheduled-tasks.json)"
 import json,sys
 d=json.load(open(sys.argv[1]))
 t=d.get("scheduledTasks",[])
 en=[x["id"] for x in t if x.get("enabled")]
 print(f"    tasks  : {len(t)} total, {len(en)} enabled")
 if en:
-    print("    enabled ids (SAVE THIS LIST):")
+    print(f"    enabled ids IN THIS PARTITION ({sys.argv[2]}) — do not confuse with the other side's list:")
     for i in en: print("      -", i)
 PY
       else
@@ -74,9 +74,14 @@ say "  You are moving work OUT of a gateway deployment and INTO a real account."
 say "  1. SOURCE = the Claude-3p partition with your work in it."
 say "     TARGET = the Claude partition for the account the app is logged into now."
 say "     (This is the mirror image of the outbound kit: here the 3p side is the source.)"
-say "  2. Save the enabled task ids printed above — they are your SOURCE list."
-say "     Also read the target's task list. Anything enabled there belongs to the account"
-say "     and is left alone by TASK_MODE=merge."
+say "  2. The SOURCE list is the enabled ids printed under \"Code sessions (Claude-3p)\"."
+say "     Write that list down. Do NOT use the \"Code sessions (Claude)\" list — that is the"
+say "     account's own routines, and the two look identical because task ids are slugs."
 say "  3. cp scripts/config.example.sh scripts/config.sh and fill it in."
 say "  4. bash scripts/restore.sh check"
 say "  5. bash scripts/check-gateway.sh   (before enabling anything)"
+say
+say "  Note on what merging does to the account's own routines: ids that exist ONLY in the"
+say "  account are left completely alone. For ids that exist on BOTH sides the gateway's"
+say "  definition wins and the task is imported DISABLED — so an account routine that was"
+say "  running stops, and restore.sh records it in target-was-enabled-<stamp>.txt."

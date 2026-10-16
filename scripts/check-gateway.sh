@@ -110,5 +110,6 @@ if [ "${BAD}" -gt 0 ]; then
   echo
   echo "  Fix the PROBLEM items before you enable any routine."
   echo "  See docs/03-leaving-gateway.md and docs/04-browser.md."
+  exit 1
 fi
 exit 0

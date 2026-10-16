@@ -30,8 +30,21 @@
 往外搬的时候，目标分区是全新的、空的。往回搬不一样，有两个坑是反向独有的。
 
 **第一，目标分区是活的。** 你刚登录的账号可能已经有它自己的会话和定时任务了。
-所以这个仓库**不覆盖**，它按 id **合并**：两边都有的以网关侧为准，只在账号侧有的原样保留，
-连它的启用状态都不动。
+所以这个仓库**不覆盖**，它按 id **合并**。
+
+这里有个**必须先知道**的点。任务 id 是人可读的 slug（`daily-backlink-building` 这种），
+**不是 uuid**，所以只要两边跑的是同一批任务，**id 就会全部撞上**。这不是小概率，是常态——
+写这个仓库的机器上就是 110 个撞 110 个，账号侧有 76 个正在跑。
+
+撞上的时候只能留一个定义，取网关侧的那份，而且**导入后是停用状态**。意味着账号侧
+本来在跑的同名任务**会被关掉**。这是有意的（工具绝不自己启动任何任务），但它确实
+会停掉你原本在跑的东西，所以脚本会把名单单独存下来：
+
+- `target-was-enabled-<时间戳>.txt`，导入前**账号侧**原本启用的全部任务
+- `task-merge-report-<时间戳>.txt` 里「WAS running in the account, now DISABLED」那一段，本次真正被关掉的
+
+要不要恢复、恢复哪几条由你决定，**但先核模型 id**，因为那条任务的定义现在来自网关侧。
+只有网关侧没有、账号侧独有的 id 才是完全不动，连启用状态都不碰。
 
 **第二，机器上还留着网关的痕迹。** 退出登录**不会**清掉 shell 里的
 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`。每开一个新终端、每跑一个定时任务，
@@ -67,21 +80,26 @@ cp SKILL.md ~/.claude/skills/claude-account-restore/SKILL.md
 ### 快速开始
 
 ```bash
-git clone <本仓库> && cd claude-restore-kit
+git clone https://github.com/zhangwenhao66/claude-restore-kit.git && cd claude-restore-kit
 
-bash scripts/find-partitions.sh        # 1. 找源（Claude-3p）和目标（Claude）；存好启用清单
+bash scripts/find-partitions.sh        # 1. 找源（Claude-3p）和目标（Claude）；抄下 Claude-3p 那一段的启用清单
 cp scripts/config.example.sh scripts/config.sh && $EDITOR scripts/config.sh   # 2. 填配置
 bash scripts/restore.sh check          # 3. 只读预检（Claude 开着也能跑）
 
-# 4. 完全退出 Claude Desktop（⌘Q），然后：
+# 4. 先离开网关模式（见 docs/03），然后确认没有残留：
+bash scripts/check-gateway.sh          # 必须看到 app 用的是 .../Application Support/Claude
+
+# 5. 完全退出 Claude Desktop（⌘Q），然后：
 bash scripts/restore.sh test           # 只搬 20 条，重开 Claude 肉眼确认
 bash scripts/restore.sh all            # 全量；任务按 id 合并，且全部停用
 
-# 5. 重开 Claude，先查网关残留，再分批恢复启用：
-bash scripts/check-gateway.sh
+# 6. 读一遍 task-merge-report-*.txt，再分批恢复启用：
 bash scripts/restore-enabled.sh --dry-run
 bash scripts/restore-enabled.sh --limit 5
 ```
+
+> 第 4 步不能跳过。App 还在网关模式时，你写进去的是它**没在读**的那个分区，
+> 看起来就像迁移失败了。
 
 ### 什么能搬回来
 
@@ -136,9 +154,26 @@ It is the reverse of [`claude-migration-kit`](https://github.com/zhangwenhao66/c
 Two things differ, and both bite.
 
 **The target is live.** The account you just signed into may already have its own sessions and
-routines. So this kit **merges** rather than replaces: ids present on both sides are updated
-from the gateway, ids that exist only in the account are left completely alone — including
-their enabled state.
+routines. So this kit **merges** rather than replaces, by task id.
+
+**Know this before you run it.** Task ids are human-readable slugs (`daily-backlink-building`),
+**not** uuids. If both deployments run the same task set, *every* id collides — that is the
+normal case, not an edge case. On the machine this kit was written on, 110 of 110 collided and
+the account side had 76 of them running.
+
+When an id collides there is room for one definition, the gateway's wins, and the task is
+imported **disabled**. So an account-side routine that was running stops. That is deliberate —
+the kit never starts a task by itself — but it does switch off work you had going, so the script
+records it:
+
+- `target-was-enabled-<stamp>.txt` — everything that was enabled in the **account** before the
+  import;
+- the *"WAS running in the account, now DISABLED"* section of `task-merge-report-<stamp>.txt` —
+  the ones this run actually switched off.
+
+Restoring any of them is your call — but check the model id first, because the task definition
+is now the gateway's. Only ids that exist **solely** in the account are left untouched, enabled
+state and all.
 
 **The machine still points at the gateway.** Logging out does **not** remove
 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` from your shell profiles. Every new terminal and
@@ -160,20 +195,25 @@ exists for exactly this, and must run before you enable anything.
 ### Quick start
 
 ```bash
-git clone <this repo> && cd claude-restore-kit
+git clone https://github.com/zhangwenhao66/claude-restore-kit.git && cd claude-restore-kit
 
 bash scripts/find-partitions.sh        # 1. find source (Claude-3p) and target (Claude)
 cp scripts/config.example.sh scripts/config.sh && $EDITOR scripts/config.sh   # 2. fill it in
 bash scripts/restore.sh check          # 3. read-only preflight
 
-# 4. quit Claude Desktop (⌘Q), then:
+# 4. leave gateway mode first (docs/03), then confirm there is no residue:
+bash scripts/check-gateway.sh          # must show the app on .../Application Support/Claude
+
+# 5. quit Claude Desktop (⌘Q), then:
 bash scripts/restore.sh test           # 20 sessions — reopen and verify
 bash scripts/restore.sh all            # everything; tasks merged, all imported disabled
 
-# 5. reopen Claude, check for gateway residue, then restore the enabled set in batches:
-bash scripts/check-gateway.sh
+# 6. read task-merge-report-*.txt, then restore the enabled set in batches:
 bash scripts/restore-enabled.sh --limit 5
 ```
+
+> Step 4 is not optional. While the app is still in gateway mode you would be writing into the
+> partition it is **not** reading, which looks exactly like a failed restore.
 
 ### What is preserved
 
